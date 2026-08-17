@@ -1,0 +1,6 @@
+Flask
+PyMuPDF
+google-genai
+python-dotenv
+WeasyPrint
+PyMuPDF4LLM

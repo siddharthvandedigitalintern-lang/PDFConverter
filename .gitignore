@@ -1,0 +1,20 @@
+# Environments
+.venv/
+.env
+
+# Python Cache
+__pycache__/
+*.pyc
+
+# Standalone/OS-specific binary tool directories
+weasyprint-windows/
+
+# App/User data
+uploads/
+static/images/
+
+# PDF design artifacts and temp files
+*.pdf
+*.zip
+verify_headings.txt
+raw_text_dump.txt
