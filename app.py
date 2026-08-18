@@ -976,7 +976,32 @@ def render_pdf(html: str, output_path: Path) -> None:
             except Exception:
                 pass
     else:
-        HTML(string=html, base_url=str(BASE_DIR)).write_pdf(output_path)
+        # Run WeasyPrint in a subprocess on Linux to completely isolate memory
+        import sys
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as temp_html:
+            temp_html.write(html)
+            temp_html_path = temp_html.name
+        try:
+            cmd = [
+                sys.executable,
+                "-m",
+                "weasyprint",
+                "--base-url", str(BASE_DIR),
+                temp_html_path,
+                str(output_path)
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode != 0:
+                app.logger.warning(f"Subprocess WeasyPrint failed (rc={result.returncode}), attempting inline fallback. Stderr: {result.stderr}")
+                HTML(string=html, base_url=str(BASE_DIR)).write_pdf(output_path)
+        except Exception as exc:
+            app.logger.warning(f"Subprocess WeasyPrint raised exception: {exc}, attempting inline fallback.")
+            HTML(string=html, base_url=str(BASE_DIR)).write_pdf(output_path)
+        finally:
+            try:
+                os.unlink(temp_html_path)
+            except Exception:
+                pass
 
 
 def validate_rendered_content(segments: list[dict], classification: dict, output_path: Path) -> None:
@@ -1361,8 +1386,8 @@ def _process_pdf_async(job_id, source_path, output_path, image_dir, filename):
                 except Exception:
                     page_count = 1
                 
-                if page_count > 8:
-                    app.logger.info(f"[{job_id}] Document has {page_count} pages. Exceeds safe redesign threshold of 8 pages. Swapping to fast branded PDF fallback to prevent server crash.")
+                if page_count > 100:
+                    app.logger.info(f"[{job_id}] Document has {page_count} pages. Exceeds safe redesign threshold of 100 pages. Swapping to fast branded PDF fallback to prevent server crash.")
                     _update_status(job_id, "processing", 50, "Redesigning document using branded fallback engine...", filename=filename)
                     render_branded_pdf(source_path, output_path, filename)
                 else:
