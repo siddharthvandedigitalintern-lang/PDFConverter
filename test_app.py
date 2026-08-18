@@ -45,9 +45,16 @@ class FormatPdfTest(unittest.TestCase):
             doc.close()
 
         render_pdf.side_effect = fake_render
+        
+        # Create a valid minimal 1-page PDF to avoid FileDataError in tests
+        test_pdf = fitz.open()
+        test_pdf.new_page()
+        pdf_bytes = test_pdf.write()
+        test_pdf.close()
+        
         response = self.client.post(
             "/format",
-            data={"pdf": (io.BytesIO(b"%PDF-1.4"), "notes.pdf")},
+            data={"pdf": (io.BytesIO(pdf_bytes), "notes.pdf")},
             content_type="multipart/form-data",
         )
         self.assertEqual(response.status_code, 202)
