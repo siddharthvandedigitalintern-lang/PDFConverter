@@ -315,7 +315,14 @@ def extract_segments_layout(source_path: Path, image_dir: Path) -> list[dict]:
                 f"open(r'{tmp_path.as_posix()}', 'w', encoding='utf-8').write(json.dumps(chunks))"
             ]
             
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=120)
+            except subprocess.TimeoutExpired as e:
+                app.logger.error(f"Extraction subprocess timed out on pages {start_idx}-{end_idx}")
+                raise RuntimeError(f"Extraction subprocess timed out on pages {start_idx}-{end_idx}") from e
+            except subprocess.CalledProcessError as e:
+                app.logger.error(f"Extraction subprocess failed on pages {start_idx}-{end_idx}. stderr: {e.stderr}")
+                raise RuntimeError(f"Extraction subprocess failed: {e.stderr or e.output}") from e
             
             if tmp_path.exists():
                 chunk_data = json.loads(tmp_path.read_text(encoding="utf-8"))
