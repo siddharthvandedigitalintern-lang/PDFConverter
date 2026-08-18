@@ -35,6 +35,17 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
+import logging
+from logging.handlers import RotatingFileHandler
+log_file = UPLOAD_DIR / "app.log"
+file_handler = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=2)
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(logging.Formatter(
+    '[%(asctime)s] %(levelname)s in %(module)s: %(message)s'
+))
+app.logger.addHandler(file_handler)
+app.logger.setLevel(logging.INFO)
+
 CLASSIFICATION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1362,6 +1373,19 @@ def render_branded_pdf(source_path: Path, output_path: Path, title: str | None =
 @app.get("/")
 def index():
     return render_template("index.html")
+
+
+@app.get("/logs")
+def get_logs():
+    log_file = UPLOAD_DIR / "app.log"
+    if not log_file.exists():
+        return "No logs found.", 404
+    try:
+        lines = log_file.read_text(encoding="utf-8").splitlines()
+        last_lines = lines[-500:]
+        return "<pre>" + "\n".join(last_lines) + "</pre>"
+    except Exception as exc:
+        return f"Error reading logs: {exc}", 500
 
 
 def _update_status(job_id, status, progress, message="", error=None, filename=None):
