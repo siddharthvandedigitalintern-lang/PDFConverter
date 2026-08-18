@@ -470,6 +470,7 @@ table.brand-table tbody tr:nth-child(even) {
 <body>
 
 <!-- Cover Page -->
+{% if not skip_cover %}
 <div class="cover-page">
   <div class="cover-top-bar"></div>
   <div class="cover-bottom-bar"></div>
@@ -498,8 +499,10 @@ table.brand-table tbody tr:nth-child(even) {
   </div>
   <div class="cover-footer">NOTESNINJA.IN</div>
 </div>
+{% endif %}
 
 <!-- Units content -->
+{% if not skip_units %}
 {% for unit in document.units %}
   <section class="unit-cover">
     <div class="unit-tag">UNIT {{ unit.unit_number }}</div>
@@ -659,6 +662,7 @@ table.brand-table tbody tr:nth-child(even) {
     </div>
   {% endfor %}
 {% endfor %}
+{% endif %}
 
 </body>
 </html>

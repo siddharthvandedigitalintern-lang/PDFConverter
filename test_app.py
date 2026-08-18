@@ -39,7 +39,10 @@ class FormatPdfTest(unittest.TestCase):
         def fake_render(html, path):
             generated.append(path)
             rendered_html.append(html)
-            path.write_bytes(b"%PDF-1.4 demo")
+            doc = fitz.open()
+            doc.new_page()
+            doc.save(path)
+            doc.close()
 
         render_pdf.side_effect = fake_render
         response = self.client.post(
@@ -69,7 +72,7 @@ class FormatPdfTest(unittest.TestCase):
         self.assertEqual(download_resp.status_code, 200)
         self.assertEqual(download_resp.mimetype, "application/pdf")
         self.assertIn("filename=notes.pdf", download_resp.headers["Content-Disposition"])
-        self.assertEqual(download_resp.data, b"%PDF-1.4 demo")
+        self.assertTrue(download_resp.data.startswith(b"%PDF"))
         self.assertIn('<h1 class="cover-title">Title</h1>', rendered_html[0])
         download_resp.close()
 

@@ -1301,11 +1301,18 @@ def index():
 
 def _process_pdf_async(job_id, source_path, output_path, image_dir, filename):
     status_path = UPLOAD_DIR / f"{job_id}.status.json"
+    app.logger.info(f"[{job_id}] Starting async layout redesign for: {filename}")
     try:
         try:
             with app.app_context():
+                app.logger.info(f"[{job_id}] Step 1: Extracting text & layout segments from source PDF...")
                 segments = extract_segments_layout(source_path, image_dir)
+                app.logger.info(f"[{job_id}] Extracted {len(segments)} segments successfully.")
+                
+                app.logger.info(f"[{job_id}] Step 2: Running local layout classification...")
                 classification = local_classification(segments)
+                
+                app.logger.info(f"[{job_id}] Step 3: Building and formatting document structures...")
                 document = build_document(segments, classification)
                 clean_title = re.sub(r"(?i)\.docx.*$|\s*\(\d+\)$", "", Path(filename).stem)
                 clean_title = " ".join(clean_title.replace("_", " ").split())
@@ -1313,18 +1320,63 @@ def _process_pdf_async(job_id, source_path, output_path, image_dir, filename):
                 document["title"] = original_title or clean_title
                 document["footer_subject"] = _cover_title(original_title)
                 document = componentize_document(document)
-                html = render_template("notesninja.html", document=document)
                 
-                # Delete large data objects and collect garbage before CPU/RAM intensive PDF rendering
+                # 1. Render Cover Page PDF
+                app.logger.info(f"[{job_id}] Step 4: Compiling Cover Page HTML template...")
+                cover_pdf_path = UPLOAD_DIR / f"{job_id}.cover.pdf"
+                cover_html = render_template("notesninja.html", document=document, skip_units=True)
+                
+                # Free segments/classification before compiling PDF to optimize memory
+                app.logger.info(f"[{job_id}] Cleaning extraction memory before rendering...")
                 del segments
                 del classification
-                del document
                 import gc
                 gc.collect()
                 
-                render_pdf(html, output_path)
+                app.logger.info(f"[{job_id}] Step 5: Rendering Cover Page PDF via WeasyPrint...")
+                render_pdf(cover_html, cover_pdf_path)
+                app.logger.info(f"[{job_id}] Cover Page rendered successfully.")
+                
+                # 2. Render each Unit PDF
+                unit_pdf_paths = []
+                original_units = document.get("units", [])
+                app.logger.info(f"[{job_id}] Step 6: Rendering {len(original_units)} units individually to stay under RAM limit...")
+                for index, unit in enumerate(original_units):
+                    app.logger.info(f"[{job_id}] Rendering Unit {index + 1}/{len(original_units)}: {unit.get('display_heading')}...")
+                    unit_pdf_path = UPLOAD_DIR / f"{job_id}.unit_{index}.pdf"
+                    
+                    unit_doc = document.copy()
+                    unit_doc["units"] = [unit]
+                    
+                    unit_html = render_template("notesninja.html", document=unit_doc, skip_cover=True)
+                    
+                    # Force gc between unit compiles
+                    gc.collect()
+                    
+                    render_pdf(unit_html, unit_pdf_path)
+                    unit_pdf_paths.append(unit_pdf_path)
+                
+                del document
+                gc.collect()
+                
+                # 3. Merge Cover and Units using PyMuPDF (fitz)
+                app.logger.info(f"[{job_id}] Step 7: Merging cover and unit PDFs into final output...")
+                with fitz.open() as output_pdf:
+                    if cover_pdf_path.exists():
+                        with fitz.open(cover_pdf_path) as cover:
+                            output_pdf.insert_pdf(cover)
+                        cover_pdf_path.unlink(missing_ok=True)
+                    
+                    for path in unit_pdf_paths:
+                        if path.exists():
+                            with fitz.open(path) as unit_pdf:
+                                output_pdf.insert_pdf(unit_pdf)
+                            path.unlink(missing_ok=True)
+                    
+                    output_pdf.save(output_path)
+                app.logger.info(f"[{job_id}] PDF compilation and merging completed successfully!")
         except Exception:
-            app.logger.exception("Layout conversion failed; preserving original PDF pages")
+            app.logger.exception(f"[{job_id}] Layout conversion failed; falling back to branded PDF pages")
             import gc
             gc.collect()
             render_branded_pdf(source_path, output_path, filename)
@@ -1339,6 +1391,9 @@ def _process_pdf_async(job_id, source_path, output_path, image_dir, filename):
     finally:
         source_path.unlink(missing_ok=True)
         shutil.rmtree(image_dir, ignore_errors=True)
+        (UPLOAD_DIR / f"{job_id}.cover.pdf").unlink(missing_ok=True)
+        for i in range(100):
+            (UPLOAD_DIR / f"{job_id}.unit_{i}.pdf").unlink(missing_ok=True)
 
 
 @app.post("/format")
