@@ -284,17 +284,27 @@ def _plain_markdown(value: str) -> str:
 def extract_segments_layout(source_path: Path, image_dir: Path) -> list[dict]:
     """Fast layout-aware extraction with stable page and box reading order."""
     image_dir.mkdir(parents=True, exist_ok=True)
-    chunks = pymupdf4llm.to_markdown(
-        str(source_path),
-        page_chunks=True,
-        write_images=True,
-        image_path=str(image_dir),
-        image_format="jpg",
-        use_ocr=False,
-        force_text=False,
-        header=False,
-        footer=False,
-    )
+    
+    with fitz.open(source_path) as doc:
+        page_count = len(doc)
+        
+    chunks = []
+    import gc
+    for page_idx in range(page_count):
+        page_chunks = pymupdf4llm.to_markdown(
+            str(source_path),
+            pages=[page_idx],
+            page_chunks=True,
+            write_images=True,
+            image_path=str(image_dir),
+            image_format="jpg",
+            use_ocr=False,
+            force_text=False,
+            header=False,
+            footer=False,
+        )
+        chunks.extend(page_chunks)
+        gc.collect()
     segments = []
     for chunk in chunks:
         page = int(chunk["metadata"]["page_number"])
