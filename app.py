@@ -285,26 +285,36 @@ def extract_segments_layout(source_path: Path, image_dir: Path) -> list[dict]:
     """Fast layout-aware extraction with stable page and box reading order."""
     image_dir.mkdir(parents=True, exist_ok=True)
     
-    with fitz.open(source_path) as doc:
-        page_count = len(doc)
+    # Run the heavy layout extraction in a separate python subprocess to guarantee
+    # all memory allocated by PyMuPDF/fitz is completely reclaimed by the OS upon exit,
+    # preventing Gunicorn from exceeding Render's strict 512MB RAM limit.
+    import subprocess
+    import sys
+    import json
+    import tempfile
+    
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    
+    try:
+        cmd = [
+            sys.executable,
+            "-c",
+            "import pymupdf4llm, json; "
+            f"chunks = pymupdf4llm.to_markdown(r'{source_path.as_posix()}', page_chunks=True, write_images=True, image_path=r'{image_dir.as_posix()}', image_format='jpg', use_ocr=False, force_text=False, header=False, footer=False); "
+            f"open(r'{tmp_path.as_posix()}', 'w', encoding='utf-8').write(json.dumps(chunks))"
+        ]
         
-    chunks = []
-    import gc
-    for page_idx in range(page_count):
-        page_chunks = pymupdf4llm.to_markdown(
-            str(source_path),
-            pages=[page_idx],
-            page_chunks=True,
-            write_images=True,
-            image_path=str(image_dir),
-            image_format="jpg",
-            use_ocr=False,
-            force_text=False,
-            header=False,
-            footer=False,
-        )
-        chunks.extend(page_chunks)
-        gc.collect()
+        # Run with check=True to raise an error if the subprocess fails
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        
+        if tmp_path.exists():
+            chunks = json.loads(tmp_path.read_text(encoding="utf-8"))
+        else:
+            raise RuntimeError("Subprocess did not generate segments file.")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+        
     segments = []
     for chunk in chunks:
         page = int(chunk["metadata"]["page_number"])
