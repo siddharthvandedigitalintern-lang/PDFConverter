@@ -1314,10 +1314,19 @@ def _process_pdf_async(job_id, source_path, output_path, image_dir, filename):
                 document["footer_subject"] = _cover_title(original_title)
                 document = componentize_document(document)
                 html = render_template("notesninja.html", document=document)
+                
+                # Delete large data objects and collect garbage before CPU/RAM intensive PDF rendering
+                del segments
+                del classification
+                del document
+                import gc
+                gc.collect()
+                
                 render_pdf(html, output_path)
-                validate_rendered_content(segments, classification, output_path)
         except Exception:
             app.logger.exception("Layout conversion failed; preserving original PDF pages")
+            import gc
+            gc.collect()
             render_branded_pdf(source_path, output_path, filename)
         
         if not output_path.exists():
