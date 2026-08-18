@@ -285,35 +285,45 @@ def extract_segments_layout(source_path: Path, image_dir: Path) -> list[dict]:
     """Fast layout-aware extraction with stable page and box reading order."""
     image_dir.mkdir(parents=True, exist_ok=True)
     
-    # Run the heavy layout extraction in a separate python subprocess to guarantee
-    # all memory allocated by PyMuPDF/fitz is completely reclaimed by the OS upon exit,
-    # preventing Gunicorn from exceeding Render's strict 512MB RAM limit.
+    with fitz.open(source_path) as doc:
+        page_count = len(doc)
+    
+    # Process the document in chunks of 8 pages, running each chunk in a separate python subprocess.
+    # This guarantees that all memory allocated by PyMuPDF/fitz is completely reclaimed by the OS
+    # upon subprocess exit, keeping container memory usage under 300MB at all times.
     import subprocess
     import sys
     import json
     import tempfile
     
-    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
-        tmp_path = Path(tmp.name)
+    chunks = []
+    chunk_size = 8
     
-    try:
-        cmd = [
-            sys.executable,
-            "-c",
-            "import pymupdf4llm, json; "
-            f"chunks = pymupdf4llm.to_markdown(r'{source_path.as_posix()}', page_chunks=True, write_images=True, image_path=r'{image_dir.as_posix()}', image_format='jpg', use_ocr=False, force_text=False, header=False, footer=False); "
-            f"open(r'{tmp_path.as_posix()}', 'w', encoding='utf-8').write(json.dumps(chunks))"
-        ]
+    for start_idx in range(0, page_count, chunk_size):
+        end_idx = min(start_idx + chunk_size, page_count)
+        pages_list = list(range(start_idx, end_idx))
         
-        # Run with check=True to raise an error if the subprocess fails
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
-        
-        if tmp_path.exists():
-            chunks = json.loads(tmp_path.read_text(encoding="utf-8"))
-        else:
-            raise RuntimeError("Subprocess did not generate segments file.")
-    finally:
-        tmp_path.unlink(missing_ok=True)
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            
+        try:
+            cmd = [
+                sys.executable,
+                "-c",
+                "import pymupdf4llm, json; "
+                f"chunks = pymupdf4llm.to_markdown(r'{source_path.as_posix()}', pages={pages_list}, page_chunks=True, write_images=True, image_path=r'{image_dir.as_posix()}', image_format='jpg', use_ocr=False, force_text=False, header=False, footer=False); "
+                f"open(r'{tmp_path.as_posix()}', 'w', encoding='utf-8').write(json.dumps(chunks))"
+            ]
+            
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            
+            if tmp_path.exists():
+                chunk_data = json.loads(tmp_path.read_text(encoding="utf-8"))
+                chunks.extend(chunk_data)
+            else:
+                raise RuntimeError(f"Subprocess did not generate segments for pages {start_idx}-{end_idx}.")
+        finally:
+            tmp_path.unlink(missing_ok=True)
         
     segments = []
     for chunk in chunks:
@@ -1375,25 +1385,28 @@ def _process_pdf_async(job_id, source_path, output_path, image_dir, filename):
                 # 2. Render each Unit PDF
                 unit_pdf_paths = []
                 original_units = document.get("units", [])
-                app.logger.info(f"[{job_id}] Step 6: Rendering {len(original_units)} units individually to stay under RAM limit...")
-                for index, unit in enumerate(original_units):
-                    unit_progress = 50 + int((index / len(original_units)) * 40)
-                    unit_name = unit.get("display_heading") or f"Unit {unit.get('unit_number')}"
-                    _update_status(job_id, "processing", unit_progress, f"Rendering {unit_name} (Section {index + 1} of {len(original_units)})...", filename=filename)
-                    
-                    app.logger.info(f"[{job_id}] Rendering Unit {index + 1}/{len(original_units)}: {unit.get('display_heading')}...")
-                    unit_pdf_path = UPLOAD_DIR / f"{job_id}.unit_{index}.pdf"
-                    
-                    unit_doc = document.copy()
-                    unit_doc["units"] = [unit]
-                    
-                    unit_html = render_template("notesninja.html", document=unit_doc, skip_cover=True)
-                    
-                    # Force gc between unit compiles
-                    gc.collect()
-                    
-                    render_pdf(unit_html, unit_pdf_path)
-                    unit_pdf_paths.append(unit_pdf_path)
+                if original_units:
+                    app.logger.info(f"[{job_id}] Step 6: Rendering {len(original_units)} units individually to stay under RAM limit...")
+                    for index, unit in enumerate(original_units):
+                        unit_progress = 50 + int((index / len(original_units)) * 40)
+                        unit_name = unit.get("display_heading") or f"Unit {unit.get('unit_number')}"
+                        _update_status(job_id, "processing", unit_progress, f"Rendering {unit_name} (Section {index + 1} of {len(original_units)})...", filename=filename)
+                        
+                        app.logger.info(f"[{job_id}] Rendering Unit {index + 1}/{len(original_units)}: {unit.get('display_heading')}...")
+                        unit_pdf_path = UPLOAD_DIR / f"{job_id}.unit_{index}.pdf"
+                        
+                        unit_doc = document.copy()
+                        unit_doc["units"] = [unit]
+                        
+                        unit_html = render_template("notesninja.html", document=unit_doc, skip_cover=True)
+                        
+                        # Force gc between unit compiles
+                        gc.collect()
+                        
+                        render_pdf(unit_html, unit_pdf_path)
+                        unit_pdf_paths.append(unit_pdf_path)
+                else:
+                    app.logger.info(f"[{job_id}] Step 6: No units found to render.")
                 
                 del document
                 gc.collect()
