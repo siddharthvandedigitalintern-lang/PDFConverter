@@ -415,8 +415,22 @@
         });
 
         if (!response.ok) {
-          const data = await response.json();
-          throw new Error(data.error || 'Server error during redesign.');
+          let errMsg = 'Server error during redesign.';
+          const contentType = response.headers.get('content-type');
+          if (contentType && contentType.includes('application/json')) {
+            try {
+              const data = await response.json();
+              errMsg = data.error || errMsg;
+            } catch (_) {}
+          } else {
+            const text = await response.text();
+            if (text.length < 500) {
+              errMsg = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() || `Error (${response.status})`;
+            } else {
+              errMsg = `Server error (${response.status}: ${response.statusText})`;
+            }
+          }
+          throw new Error(errMsg);
         }
 
         // Get file blob and download it
