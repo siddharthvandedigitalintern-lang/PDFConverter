@@ -1299,19 +1299,32 @@ def index():
     return render_template("index.html")
 
 
-def _process_pdf_async(job_id, source_path, output_path, image_dir, filename):
+def _update_status(job_id, status, progress, message="", error=None, filename=None):
     status_path = UPLOAD_DIR / f"{job_id}.status.json"
+    data = {"status": status, "progress": progress, "message": message}
+    if error:
+        data["error"] = error
+    if filename:
+        data["filename"] = filename
+    status_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _process_pdf_async(job_id, source_path, output_path, image_dir, filename):
     app.logger.info(f"[{job_id}] Starting async layout redesign for: {filename}")
+    _update_status(job_id, "processing", 5, "Initializing processing...", filename=filename)
     try:
         try:
             with app.app_context():
+                _update_status(job_id, "processing", 10, "Extracting text and layout segments from PDF...", filename=filename)
                 app.logger.info(f"[{job_id}] Step 1: Extracting text & layout segments from source PDF...")
                 segments = extract_segments_layout(source_path, image_dir)
                 app.logger.info(f"[{job_id}] Extracted {len(segments)} segments successfully.")
                 
+                _update_status(job_id, "processing", 25, "Running layout structure classification...", filename=filename)
                 app.logger.info(f"[{job_id}] Step 2: Running local layout classification...")
                 classification = local_classification(segments)
                 
+                _update_status(job_id, "processing", 35, "Building structured document...", filename=filename)
                 app.logger.info(f"[{job_id}] Step 3: Building and formatting document structures...")
                 document = build_document(segments, classification)
                 clean_title = re.sub(r"(?i)\.docx.*$|\s*\(\d+\)$", "", Path(filename).stem)
@@ -1322,6 +1335,7 @@ def _process_pdf_async(job_id, source_path, output_path, image_dir, filename):
                 document = componentize_document(document)
                 
                 # 1. Render Cover Page PDF
+                _update_status(job_id, "processing", 40, "Compiling Cover Page layout...", filename=filename)
                 app.logger.info(f"[{job_id}] Step 4: Compiling Cover Page HTML template...")
                 cover_pdf_path = UPLOAD_DIR / f"{job_id}.cover.pdf"
                 cover_html = render_template("notesninja.html", document=document, skip_units=True)
@@ -1333,6 +1347,7 @@ def _process_pdf_async(job_id, source_path, output_path, image_dir, filename):
                 import gc
                 gc.collect()
                 
+                _update_status(job_id, "processing", 45, "Generating Cover Page PDF...", filename=filename)
                 app.logger.info(f"[{job_id}] Step 5: Rendering Cover Page PDF via WeasyPrint...")
                 render_pdf(cover_html, cover_pdf_path)
                 app.logger.info(f"[{job_id}] Cover Page rendered successfully.")
@@ -1342,6 +1357,10 @@ def _process_pdf_async(job_id, source_path, output_path, image_dir, filename):
                 original_units = document.get("units", [])
                 app.logger.info(f"[{job_id}] Step 6: Rendering {len(original_units)} units individually to stay under RAM limit...")
                 for index, unit in enumerate(original_units):
+                    unit_progress = 50 + int((index / len(original_units)) * 40)
+                    unit_name = unit.get("display_heading") or f"Unit {unit.get('unit_number')}"
+                    _update_status(job_id, "processing", unit_progress, f"Rendering {unit_name} (Section {index + 1} of {len(original_units)})...", filename=filename)
+                    
                     app.logger.info(f"[{job_id}] Rendering Unit {index + 1}/{len(original_units)}: {unit.get('display_heading')}...")
                     unit_pdf_path = UPLOAD_DIR / f"{job_id}.unit_{index}.pdf"
                     
@@ -1360,6 +1379,7 @@ def _process_pdf_async(job_id, source_path, output_path, image_dir, filename):
                 gc.collect()
                 
                 # 3. Merge Cover and Units using PyMuPDF (fitz)
+                _update_status(job_id, "processing", 92, "Merging redesigned page layouts...", filename=filename)
                 app.logger.info(f"[{job_id}] Step 7: Merging cover and unit PDFs into final output...")
                 with fitz.open() as output_pdf:
                     if cover_pdf_path.exists():
@@ -1376,6 +1396,7 @@ def _process_pdf_async(job_id, source_path, output_path, image_dir, filename):
                     output_pdf.save(output_path)
                 app.logger.info(f"[{job_id}] PDF compilation and merging completed successfully!")
         except Exception:
+            _update_status(job_id, "processing", 95, "Design failed, preparing basic branded fallback...", filename=filename)
             app.logger.exception(f"[{job_id}] Layout conversion failed; falling back to branded PDF pages")
             import gc
             gc.collect()
@@ -1384,10 +1405,10 @@ def _process_pdf_async(job_id, source_path, output_path, image_dir, filename):
         if not output_path.exists():
             raise RuntimeError("Failed to generate output PDF file.")
             
-        status_path.write_text(json.dumps({"status": "completed", "filename": filename}), encoding="utf-8")
+        _update_status(job_id, "completed", 100, "Redesign complete!", filename=filename)
     except Exception as exc:
         app.logger.exception("PDF formatting failed")
-        status_path.write_text(json.dumps({"status": "failed", "error": str(exc)}), encoding="utf-8")
+        _update_status(job_id, "failed", 0, "Error occurred during redesign.", error=str(exc))
     finally:
         source_path.unlink(missing_ok=True)
         shutil.rmtree(image_dir, ignore_errors=True)
@@ -1412,7 +1433,7 @@ def format_pdf():
 
     try:
         uploaded.save(source_path)
-        status_path.write_text(json.dumps({"status": "processing", "filename": uploaded.filename}), encoding="utf-8")
+        _update_status(job_id, "processing", 0, "PDF upload successful, starting worker thread...", filename=uploaded.filename)
         
         # Start background processing thread
         thread = Thread(

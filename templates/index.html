@@ -232,6 +232,33 @@
       font-weight: 500;
     }
 
+    .progress-track {
+      width: 100%;
+      max-width: 320px;
+      height: 8px;
+      background: rgba(0, 217, 160, 0.15);
+      border-radius: 4px;
+      margin-top: 1rem;
+      overflow: hidden;
+      display: none;
+    }
+
+    .progress-bar {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--primary-light), var(--primary));
+      border-radius: 4px;
+      transition: width 0.4s ease-out;
+    }
+
+    .progress-percent {
+      font-size: 0.85rem;
+      color: var(--primary-light);
+      margin-top: 0.35rem;
+      font-weight: 600;
+      display: none;
+    }
+
     .error-msg {
       margin-top: 1rem;
       color: #EF4444;
@@ -308,6 +335,10 @@
       <div class="loading-container" id="loading-container">
         <div class="loading-spinner"></div>
         <div class="loading-text" id="loading-text">Redesigning layout...</div>
+        <div class="progress-track" id="progress-track">
+          <div class="progress-bar" id="progress-bar"></div>
+        </div>
+        <div class="progress-percent" id="progress-percent">0%</div>
       </div>
     </div>
   </div>
@@ -446,7 +477,15 @@
 
     async function pollStatus(jobId) {
       const loadingText = document.getElementById('loading-text');
-      loadingText.textContent = 'Redesigning PDF layout (this may take up to 2 mins for 25+ page PDFs)...';
+      const progressTrack = document.getElementById('progress-track');
+      const progressBar = document.getElementById('progress-bar');
+      const progressPercent = document.getElementById('progress-percent');
+      
+      progressBar.style.width = '0%';
+      progressPercent.textContent = '0%';
+      progressTrack.style.display = 'block';
+      progressPercent.style.display = 'block';
+      loadingText.textContent = 'Preparing redesign...';
       
       while (true) {
         await new Promise(resolve => setTimeout(resolve, 2000));
@@ -458,7 +497,18 @@
           }
           
           const data = await response.json();
+          
+          if (data.progress !== undefined) {
+            progressBar.style.width = `${data.progress}%`;
+            progressPercent.textContent = `${data.progress}%`;
+          }
+          if (data.message) {
+            loadingText.textContent = data.message;
+          }
+          
           if (data.status === 'completed') {
+            progressBar.style.width = '100%';
+            progressPercent.textContent = '100%';
             loadingText.textContent = 'Downloading redesigned PDF...';
             window.location.href = `/download/${jobId}`;
             
@@ -466,6 +516,8 @@
               submitBtn.style.display = 'flex';
               fileInfo.style.display = 'flex';
               loadingContainer.style.display = 'none';
+              progressTrack.style.display = 'none';
+              progressPercent.style.display = 'none';
               loadingText.textContent = 'Redesigning layout...';
             }, 3000);
             break;
@@ -477,6 +529,8 @@
           submitBtn.style.display = 'flex';
           fileInfo.style.display = 'flex';
           loadingContainer.style.display = 'none';
+          progressTrack.style.display = 'none';
+          progressPercent.style.display = 'none';
           loadingText.textContent = 'Redesigning layout...';
           break;
         }
