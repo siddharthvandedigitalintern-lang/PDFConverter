@@ -1315,6 +1315,13 @@ def format_pdf():
     try:
         uploaded.save(source_path)
         try:
+            try:
+                with fitz.open(source_path) as doc:
+                    num_pages = len(doc)
+            except Exception:
+                num_pages = 1
+            if num_pages > 8:
+                raise ValueError(f"PDF has {num_pages} pages (limit is 8 for full redesign).")
             segments = extract_segments_layout(source_path, image_dir)
             classification = local_classification(segments)
             document = build_document(segments, classification)
