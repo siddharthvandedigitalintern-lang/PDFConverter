@@ -29,6 +29,7 @@ class FormatPdfTest(unittest.TestCase):
     @patch.object(notes_ninja, "render_pdf")
     @patch.object(notes_ninja, "extract_segments_layout")
     def test_returns_generated_pdf(self, extract_segments_layout, render_pdf, _validate):
+        import time
         generated = []
         rendered_html = []
         extract_segments_layout.return_value = [
@@ -46,12 +47,31 @@ class FormatPdfTest(unittest.TestCase):
             data={"pdf": (io.BytesIO(b"%PDF-1.4"), "notes.pdf")},
             content_type="multipart/form-data",
         )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.mimetype, "application/pdf")
-        self.assertIn("filename=notes.pdf", response.headers["Content-Disposition"])
-        self.assertIn('<h1 class="cover-title">Title</h1>', rendered_html[0])
-        self.assertFalse(generated[0].exists())
+        self.assertEqual(response.status_code, 202)
+        data = response.json
+        job_id = data.get("job_id")
+        self.assertIsNotNone(job_id)
         response.close()
+
+        # Poll status until completed
+        for _ in range(50):
+            status_resp = self.client.get(f"/status/{job_id}")
+            self.assertEqual(status_resp.status_code, 200)
+            status_data = status_resp.json
+            if status_data.get("status") == "completed":
+                break
+            time.sleep(0.1)
+        else:
+            self.fail("Job did not complete in time")
+
+        # Download PDF
+        download_resp = self.client.get(f"/download/{job_id}")
+        self.assertEqual(download_resp.status_code, 200)
+        self.assertEqual(download_resp.mimetype, "application/pdf")
+        self.assertIn("filename=notes.pdf", download_resp.headers["Content-Disposition"])
+        self.assertEqual(download_resp.data, b"%PDF-1.4 demo")
+        self.assertIn('<h1 class="cover-title">Title</h1>', rendered_html[0])
+        download_resp.close()
 
     def test_branded_pdf_preserves_pages_and_source_text(self):
         with tempfile.TemporaryDirectory() as directory:

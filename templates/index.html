@@ -433,24 +433,55 @@
           throw new Error(errMsg);
         }
 
-        // Get file blob and download it
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = file.name.replace(/\.[^/.]+$/, '') + '_redesigned.pdf';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        window.URL.revokeObjectURL(url);
+        const data = await response.json();
+        const jobId = data.job_id;
+        await pollStatus(jobId);
       } catch (err) {
         showError(err.message);
-      } finally {
         submitBtn.style.display = 'flex';
         fileInfo.style.display = 'flex';
         loadingContainer.style.display = 'none';
       }
     });
+
+    async function pollStatus(jobId) {
+      const loadingText = document.getElementById('loading-text');
+      loadingText.textContent = 'Redesigning PDF layout (this may take up to 2 mins for 25+ page PDFs)...';
+      
+      while (true) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        try {
+          const response = await fetch(`/status/${jobId}`);
+          if (!response.ok) {
+            throw new Error(`Failed to check job status (${response.status})`);
+          }
+          
+          const data = await response.json();
+          if (data.status === 'completed') {
+            loadingText.textContent = 'Downloading redesigned PDF...';
+            window.location.href = `/download/${jobId}`;
+            
+            setTimeout(() => {
+              submitBtn.style.display = 'flex';
+              fileInfo.style.display = 'flex';
+              loadingContainer.style.display = 'none';
+              loadingText.textContent = 'Redesigning layout...';
+            }, 3000);
+            break;
+          } else if (data.status === 'failed') {
+            throw new Error(data.error || 'Layout redesign failed on the server.');
+          }
+        } catch (err) {
+          showError(err.message);
+          submitBtn.style.display = 'flex';
+          fileInfo.style.display = 'flex';
+          loadingContainer.style.display = 'none';
+          loadingText.textContent = 'Redesigning layout...';
+          break;
+        }
+      }
+    }
   </script>
 </body>
 </html>

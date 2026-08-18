@@ -9,7 +9,7 @@ import uuid
 import webbrowser
 from collections import Counter, defaultdict
 from pathlib import Path
-from threading import Timer
+from threading import Thread, Timer
 
 import fitz
 try:
@@ -1299,6 +1299,39 @@ def index():
     return render_template("index.html")
 
 
+def _process_pdf_async(job_id, source_path, output_path, image_dir, filename):
+    status_path = UPLOAD_DIR / f"{job_id}.status.json"
+    try:
+        try:
+            with app.app_context():
+                segments = extract_segments_layout(source_path, image_dir)
+                classification = local_classification(segments)
+                document = build_document(segments, classification)
+                clean_title = re.sub(r"(?i)\.docx.*$|\s*\(\d+\)$", "", Path(filename).stem)
+                clean_title = " ".join(clean_title.replace("_", " ").split())
+                original_title = document["title"]
+                document["title"] = original_title or clean_title
+                document["footer_subject"] = _cover_title(original_title)
+                document = componentize_document(document)
+                html = render_template("notesninja.html", document=document)
+                render_pdf(html, output_path)
+                validate_rendered_content(segments, classification, output_path)
+        except Exception:
+            app.logger.exception("Layout conversion failed; preserving original PDF pages")
+            render_branded_pdf(source_path, output_path, filename)
+        
+        if not output_path.exists():
+            raise RuntimeError("Failed to generate output PDF file.")
+            
+        status_path.write_text(json.dumps({"status": "completed", "filename": filename}), encoding="utf-8")
+    except Exception as exc:
+        app.logger.exception("PDF formatting failed")
+        status_path.write_text(json.dumps({"status": "failed", "error": str(exc)}), encoding="utf-8")
+    finally:
+        source_path.unlink(missing_ok=True)
+        shutil.rmtree(image_dir, ignore_errors=True)
+
+
 @app.post("/format")
 def format_pdf():
     uploaded = request.files.get("pdf")
@@ -1311,46 +1344,69 @@ def format_pdf():
     source_path = UPLOAD_DIR / f"{job_id}.pdf"
     output_path = UPLOAD_DIR / f"{job_id}.output.pdf"
     image_dir = UPLOAD_DIR / f"{job_id}.images"
+    status_path = UPLOAD_DIR / f"{job_id}.status.json"
 
     try:
         uploaded.save(source_path)
-        try:
-            try:
-                with fitz.open(source_path) as doc:
-                    num_pages = len(doc)
-            except Exception:
-                num_pages = 1
-            if num_pages > 8:
-                raise ValueError(f"PDF has {num_pages} pages (limit is 8 for full redesign).")
-            segments = extract_segments_layout(source_path, image_dir)
-            classification = local_classification(segments)
-            document = build_document(segments, classification)
-            clean_title = re.sub(r"(?i)\.docx.*$|\s*\(\d+\)$", "", Path(uploaded.filename).stem)
-            clean_title = " ".join(clean_title.replace("_", " ").split())
-            original_title = document["title"]
-            document["title"] = original_title or clean_title
-            document["footer_subject"] = _cover_title(original_title)
-            document = componentize_document(document)
-            html = render_template("notesninja.html", document=document)
-            render_pdf(html, output_path)
-            validate_rendered_content(segments, classification, output_path)
-        except Exception:
-            app.logger.exception("Layout conversion failed; preserving original PDF pages")
-            render_branded_pdf(source_path, output_path, uploaded.filename)
-        pdf_data = io.BytesIO(output_path.read_bytes())
-        return send_file(
-            pdf_data,
-            mimetype="application/pdf",
-            as_attachment=True,
-            download_name=f"{Path(uploaded.filename).stem}.pdf",
+        status_path.write_text(json.dumps({"status": "processing", "filename": uploaded.filename}), encoding="utf-8")
+        
+        # Start background processing thread
+        thread = Thread(
+            target=_process_pdf_async,
+            args=(job_id, source_path, output_path, image_dir, uploaded.filename)
         )
+        thread.start()
+        
+        return jsonify(job_id=job_id), 202
     except Exception as exc:
-        app.logger.exception("PDF formatting failed")
-        return jsonify(error=str(exc)), 500
-    finally:
         source_path.unlink(missing_ok=True)
-        output_path.unlink(missing_ok=True)
+        status_path.unlink(missing_ok=True)
         shutil.rmtree(image_dir, ignore_errors=True)
+        return jsonify(error=str(exc)), 500
+
+
+@app.get("/status/<job_id>")
+def get_status(job_id):
+    status_path = UPLOAD_DIR / f"{job_id}.status.json"
+    if not status_path.exists():
+        return jsonify(error="Job not found"), 404
+    try:
+        data = json.loads(status_path.read_text(encoding="utf-8"))
+        return jsonify(data)
+    except Exception as exc:
+        return jsonify(status="failed", error=str(exc)), 500
+
+
+@app.get("/download/<job_id>")
+def download_pdf(job_id):
+    status_path = UPLOAD_DIR / f"{job_id}.status.json"
+    if not status_path.exists():
+        return "Job not found", 404
+    try:
+        status_data = json.loads(status_path.read_text(encoding="utf-8"))
+    except Exception:
+        status_data = {}
+    output_path = UPLOAD_DIR / f"{job_id}.output.pdf"
+    if not output_path.exists():
+        return "File not found or processing failed", 404
+    
+    filename = status_data.get("filename", "redesigned.pdf")
+    if not filename.lower().endswith(".pdf"):
+        filename = f"{filename}.pdf"
+        
+    def cleanup():
+        time.sleep(300)
+        output_path.unlink(missing_ok=True)
+        status_path.unlink(missing_ok=True)
+        
+    Thread(target=cleanup).start()
+    
+    return send_file(
+        output_path,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=filename,
+    )
 
 
 @app.errorhandler(413)
