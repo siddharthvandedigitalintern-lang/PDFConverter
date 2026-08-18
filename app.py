@@ -12,10 +12,19 @@ from pathlib import Path
 from threading import Timer
 
 import fitz
+try:
+    import pymupdf4llm
+except ImportError:
+    pymupdf4llm = None
+
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request, send_file
 from google import genai
 
+try:
+    from weasyprint import HTML
+except (ImportError, OSError):
+    HTML = None
 
 load_dotenv()
 
@@ -274,15 +283,13 @@ def _plain_markdown(value: str) -> str:
 
 def extract_segments_layout(source_path: Path, image_dir: Path) -> list[dict]:
     """Fast layout-aware extraction with stable page and box reading order."""
-    import pymupdf4llm
-
     image_dir.mkdir(parents=True, exist_ok=True)
     chunks = pymupdf4llm.to_markdown(
         str(source_path),
         page_chunks=True,
         write_images=True,
         image_path=str(image_dir),
-        image_format="png",
+        image_format="jpg",
         use_ocr=False,
         force_text=False,
         header=False,
@@ -929,7 +936,6 @@ def render_pdf(html: str, output_path: Path) -> None:
             except Exception:
                 pass
     else:
-        from weasyprint import HTML
         HTML(string=html, base_url=str(BASE_DIR)).write_pdf(output_path)
 
 
